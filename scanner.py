@@ -3,9 +3,10 @@ import serial
 import time
 import logging
 import argparse
+import os
 
-# Set up logging
-logging.basicConfig(level=logging.INFO,
+# Set up console logging
+logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s [%(levelname)s] %(message)s')
 
 class OBDScanner:
@@ -29,7 +30,6 @@ class OBDScanner:
         Send an AT command to the adapter (appends a carriage return),
         waits a short period, and then reads the response.
         """
-        # Prepare the command by ensuring proper termination
         command = cmd.strip() + "\r"
         logging.debug("Sending: %s", command)
         self.ser.write(command.encode('utf-8'))
@@ -52,7 +52,7 @@ class OBDScanner:
 def is_valid_response(response):
     """
     Checks whether the response from the OBD-II adapter appears to contain valid data.
-    This is a placeholder function—you may need to refine it to match your adapter's error messages.
+    You may need to refine this function to match your adapter's output.
     """
     if not response:
         return False
@@ -70,49 +70,42 @@ def scan_pid_for_ecu(scanner, ecu, pid, use_extended=False):
     The sequence below is based on your sample:
     
         ATST96
-        ATSH6F1              (or ATFCSH6F1 if extended)
+        ATSH6F1 (or ATFCSH6F1 for extended addressing)
         ATCEA01
         ATCRA601
         ATFCSD01300000
         ATFCSM1
         224002
 
-    In this sample, the ECU address (e.g. "6F1") is set first, and then
-    a target ECU “slot” (here shown as "01") is used in later commands. Adjust as needed.
+    Here, the ECU address is used for both the header command and as a target slot in subsequent commands.
     """
-    # Set the timeout (or other global settings)
+    # Set a timeout or other global settings.
     scanner.send_command("ATST96")
 
-    # Set the header. If extended addressing is required, use a different command.
-    if not use_extended:
-        header_cmd = "ATSH" + ecu
-    else:
-        header_cmd = "ATFCSH" + ecu
+    # Set the header.
+    header_cmd = ("ATSH" if not use_extended else "ATFCSH") + ecu
     scanner.send_command(header_cmd)
     
-    # In our sample the next commands appear to set a “target ECU” address.
-    # For demonstration we use a fixed target address ("01"). In a real
-    # application you might compute or look up this value.
+    # Use a fixed target address ("01") for demonstration.
     target_addr = "01"
     cmds = [
         "ATCEA" + target_addr,
         "ATCRA6" + target_addr,
-        # Note: The sample shows the PID appended to "ATFCSD0", i.e.
-        # ATFCSD0[PID]. Ensure your PID string is formatted appropriately.
+        # Appending the PID to "ATFCSD0" (ensure your PID string is formatted appropriately).
         "ATFCSD0" + pid,
         "ATFCSM1"
     ]
     for cmd in cmds:
         scanner.send_command(cmd)
 
-    # Finally, send the actual PID command. (In this example, the PID is sent as-is.)
+    # Finally, send the PID query.
     pid_response = scanner.send_command(pid)
     return pid_response
 
 def main():
     parser = argparse.ArgumentParser(
         description="ECU/PID Scanner using a USB OBD-II adapter. "
-                    "The program cycles through each ECU in the list and queries each PID."
+                    "Cycles through each ECU in the list and queries each PID."
     )
     parser.add_argument("--port", required=True,
                         help="Serial port for the OBD-II adapter (e.g., COM3 or /dev/ttyUSB0)")
@@ -126,26 +119,45 @@ def main():
                         help="List of known PID values as hex strings (e.g., 224002)")
     args = parser.parse_args()
 
-    # Open the serial connection to the OBD-II adapter
-    scanner = OBDScanner(args.port, args.baudrate)
+    # Create or clear the log files at the start of each scan.
+    valid_log_path = "valid_responses.log"
+    debug_log_path = "debug_responses.log"
+    # Optionally, clear existing logs:
+    for log_file in (valid_log_path, debug_log_path):
+        if os.path.exists(log_file):
+            os.remove(log_file)
 
+    # Open log files for appending.
+    valid_log_file = open(valid_log_path, "a")
+    debug_log_file = open(debug_log_path, "a")
+
+    scanner = OBDScanner(args.port, args.baudrate)
     valid_results = []  # To store ECU/PID pairs that produce a valid response
 
     try:
-        # Loop through each ECU and each PID
+        # Loop through each ECU and each PID.
         for ecu in args.ecus:
             for pid in args.pids:
                 logging.info("Scanning ECU %s with PID %s", ecu, pid)
                 response = scan_pid_for_ecu(scanner, ecu, pid, use_extended=args.extended)
+                # Log every response to the debug log.
+                debug_message = f"ECU: {ecu} | PID: {pid} | Response: {response}\n"
+                debug_log_file.write(debug_message)
+                debug_log_file.flush()
+
                 if is_valid_response(response):
                     logging.info("Valid response from ECU %s, PID %s: %s", ecu, pid, response)
                     valid_results.append((ecu, pid, response))
+                    valid_log_file.write(f"ECU: {ecu} | PID: {pid} | Response: {response}\n")
+                    valid_log_file.flush()
                 else:
                     logging.info("No valid data from ECU %s, PID %s", ecu, pid)
     finally:
         scanner.close()
+        valid_log_file.close()
+        debug_log_file.close()
 
-    # Report the results
+    # Report the results.
     print("\nScan Complete. Valid ECU/PID responses:")
     for ecu, pid, resp in valid_results:
         print(f"ECU: {ecu} | PID: {pid} | Response: {resp}")
