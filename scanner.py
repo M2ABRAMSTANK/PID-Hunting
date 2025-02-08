@@ -21,15 +21,19 @@ class OBDScanner:
         try:
             self.ser = serial.Serial(port, baudrate=baudrate, timeout=timeout)
             logging.info("Connected to OBD-II adapter on %s", port)
+            # Send initialization commands once upon connection.
+            init_commands = ["ATWS", "ATE0", "ATM0", "ATS0", "ATAT1", "ATH1", "ATSP6", "ATS0", "ATDPN"]
+            for cmd in init_commands:
+                self.send_command(cmd)
+            logging.info("Initialization commands sent.")
         except serial.SerialException as e:
             logging.error("Error opening serial port %s: %s", port, e)
             raise
 
-    def send_command(self, cmd, delay=0.2):
-        """
-        Send an AT command to the adapter (appends a carriage return),
-        waits a short period, and then reads the response.
-        """
+    def send_command(self, cmd, delay=None):
+        # Choose delay based on command
+        if delay is None:
+            delay = 0.7 if cmd.strip().startswith("22") else 0.2
         command = cmd.strip() + "\r"
         logging.debug("Sending: %s", command)
         self.ser.write(command.encode('utf-8'))
@@ -63,42 +67,28 @@ def is_valid_response(response):
             return False
     return True
 
-def scan_pid_for_ecu(scanner, ecu, pid, use_extended=False):
+def scan_pid_for_ecu(scanner, ecu, pid, target_addr="29", use_extended=False):
     """
-    Sends a sequence of configuration and query commands to scan a given ECU with a PID.
-    
-    The sequence below is based on your sample:
-    
-        ATST96
-        ATSH6F1 (or ATFCSH6F1 for extended addressing)
-        ATCEA01
-        ATCRA601
-        ATFCSD01300000
-        ATFCSM1
-        224002
-
-    Here, the ECU address is used for both the header command and as a target slot in subsequent commands.
+    Updated to use proper target addressing for BMW F-series
     """
-    # Set a timeout or other global settings.
+    # Set a timeout
     scanner.send_command("ATST96")
 
-    # Set the header.
+    # Set the header
     header_cmd = ("ATSH" if not use_extended else "ATFCSH") + ecu
     scanner.send_command(header_cmd)
     
-    # Use a fixed target address ("01") for demonstration.
-    target_addr = "01"
+    # Use the provided target address
     cmds = [
-        "ATCEA" + target_addr,
-        "ATCRA6" + target_addr,
-        # Appending the PID to "ATFCSD0" (ensure your PID string is formatted appropriately).
-        "ATFCSD0" + pid,
-        "ATFCSM1"
+        f"ATCEA{target_addr}",  # Set Extended Address
+        f"ATCRA6{target_addr}", # Set Receive Address
+        f"ATFCSD{pid}",         # Set Data (removed the "0" prefix)
+        "ATFCSM1"               # Set Mode
     ]
     for cmd in cmds:
         scanner.send_command(cmd)
 
-    # Finally, send the PID query.
+    # For BMW F-series, the PID format should be "22xxxx"
     pid_response = scanner.send_command(pid)
     return pid_response
 
